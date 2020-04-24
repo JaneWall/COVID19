@@ -1,0 +1,635 @@
+---
+title: "Tidyverse for COVID19 Data Analysis"
+author: "J. Wall"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+  powerpoint_presentation:
+    slide_level: 3 # use this to override default
+    reference_doc: my_template.pptx
+---
+
+```{r setup, include=FALSE, warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(lubridate)
+library(broom)
+```
+
+
+
+# Get and clean worldwide Data
+
+### Data from Johns Hopkins github
+```{r filenames, message = FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in,file_names)
+```
+
+### Check urls
+```{r JHU_urls}
+urls
+```
+
+### Tidy global data
+
+```{r tidy_global}
+global_confirmed <- read_csv(urls[1]) %>%
+    pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "Date", 
+               values_to = "Confirmed_cases")
+global_deaths <- read_csv(urls[2]) %>%
+    pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "Date", 
+               values_to = "Deaths")
+    
+global <- global_confirmed %>% full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>%
+  mutate(Date = mdy(Date))
+```
+
+### fix problems
+```{r fix_global, results = "asis"}
+knitr::kable(summary(global))
+# we find there are entries of -1 for Diamond Princess
+global <- global %>% filter(Confirmed_cases >= 0, Deaths >= 0)
+```
+
+### Join population data to the dataset
+
+```{r get_pop}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+global <- global %>% 
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, Date,
+         Confirmed_cases, Deaths, Population,
+         Lat, Long)
+```
+
+### Get and tidy US data
+```{r tidy_US}
+US_confirmed <- read_csv(urls[3]) %>%
+    pivot_longer(cols = -(UID:Combined_Key), names_to = "Date", values_to = "Confirmed_cases") %>%
+    select(Admin2:Confirmed_cases) %>%
+    mutate(Date = mdy(Date))
+US_deaths <- read_csv(urls[4]) %>%
+    pivot_longer(cols = -(UID:Population), names_to = "Date", values_to ="Deaths") %>%
+    select(Admin2:Deaths) %>%
+    mutate(Date = mdy(Date))
+```
+
+### Join deaths and cases
+```{r join_US_deaths_cases}
+US <-  US_deaths %>%
+  full_join(US_confirmed, 
+            by = c("Combined_Key", "Date", 
+                   "Admin2", "Province_State", 
+                   "Country_Region")) %>%
+    rename(Long = Long_.x, Lat = Lat.x)  %>%
+    select(Admin2, Province_State, Country_Region, 
+           Lat, Long, Population, Date, Confirmed_cases, Deaths)
+```
+
+### US data so far
+```{r us_data_intermediate}
+US %>% filter(Province_State == "New York") %>%
+  select(Admin2, Province_State, Confirmed_cases, Deaths) %>%
+  head(n = 4)
+#Note that what we now have is county level data within each state. It would be nice to have data totaled for each state.
+```
+
+## DMV data
+
+### get DMV data
+```{r dmv_data}
+dmv_data <-
+  US %>%
+  mutate(state = factor(Province_State), 
+         county = factor(Admin2)) %>%
+  filter(state %in% c("Maryland", "Virginia", "District of Columbia")) %>%
+  filter(county %in% 
+           c("Anne Arundel", "Montgomery", "Howard", "Frederick", "Prince George's",
+             "Charles", "District of Columbia", "Alexandria", "Arlington", "Fairfax",
+             "Loudoun", "Prince William")) %>%
+  select(-c(Admin2, Province_State, Country_Region)) %>%
+  mutate(Deaths_per_mill = 1000000 * Deaths / Population) %>%
+  select(state, county, Date, Confirmed_cases, Deaths,
+         Deaths_per_mill, Population, Lat, Long) 
+```
+
+### Plot DMV cases by county
+```{r dmv_over_time, fig.width = 10}
+dmv_data %>%
+  filter(Confirmed_cases > 0) %>%
+  ggplot(aes(x = Date, y = Confirmed_cases, group = county, col = county)) +
+  geom_line() +
+  geom_point() +
+  facet_wrap(~ state) +
+  scale_y_log10() +
+  scale_color_brewer(palette = "Paired") + 
+  guides(color = guide_legend(ncol = 4)) +
+    theme(legend.position="bottom", axis.text.x = element_text(angle = 90))
+```
+
+### Compute cases & deaths in DMV 
+```{r exercise3_solution}
+DMV_totals <- dmv_data %>% 
+  group_by(Date) %>%
+  summarize(total_cases = sum(Confirmed_cases), 
+            total_deaths = sum(Deaths))
+
+paste0("total deaths = ", as.character(max(DMV_totals$total_deaths)) )
+
+paste0("total cases = ", as.character(max(DMV_totals$total_cases) ))
+# Latest data from:
+paste0("latest data from: ", as.character( max(DMV_totals$Date) ))
+```
+
+### Visualize DMV cases and deaths
+```{r plot_DMV_deaths}
+DMV_totals %>%
+  filter(total_cases > 0) %>%
+  ggplot(aes(x = Date, y = total_cases)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Confirmed Cases of COVID19 in DMV", x = NULL, y = NULL)
+
+DMV_totals %>%
+  filter(total_deaths > 0) %>%
+  ggplot(aes(x = Date, y = total_deaths)) +
+  geom_line(color = "red") +
+  geom_point() +
+  labs(title = "Deaths due to COVID19 in DMV", x = NULL, y = NULL)
+```
+
+### both on one graph 
+```{r DMV_plot_both}
+DMV_totals %>%
+  filter(total_cases > 0) %>%
+  ggplot(aes(x = Date, y = total_cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = total_deaths, color = "deaths"),
+            data = DMV_totals %>% filter(total_deaths > 0)) +
+  geom_point(aes(y = total_deaths, color = "deaths"),
+             data = DMV_totals %>% filter(total_deaths > 0)) +
+  scale_y_log10() + 
+  labs(title = "COVID19 in DMV", x = NULL, y = NULL)
+```
+
+## State analysis
+
+### Compute state totals
+
+```{r state_total_data}
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, Date) %>%
+  # add up counties and population
+  summarize(Confirmed_cases = sum(Confirmed_cases), 
+            Deaths = sum(Deaths), Lat = median(Lat), 
+            Long = median(Long), Population = sum(Population)) %>%
+  select(Province_State, Country_Region, Date,
+         Confirmed_cases, Deaths, Population,
+         Lat, Long) %>%
+  ungroup()
+```
+
+### State data now
+```{r state_total_show}
+US_by_state %>% head(n = 3) %>% 
+  select(Province_State, Date, Confirmed_cases, 
+         Deaths, Population, Country_Region)
+```
+### Order deaths and cases by state
+
+```{r deaths_per_state}
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>% 
+  summarize(cases = max(Confirmed_cases),
+            deaths = max(Deaths),
+            population = max(Population)) %>%
+  filter(cases > 0) %>%
+  mutate(deaths_per_mill = 1000000 * deaths / population) %>%
+  arrange(desc(cases))
+```
+
+### View list by states
+
+```{r view_state_totals, results = "asis"}
+knitr::kable(US_state_totals %>% slice(1:10))
+```
+
+### Totals for US
+```{r us_total_deaths}
+# total deaths 
+paste0("total US deaths = ", as.character(sum(US_state_totals$deaths)) )
+
+# total cases
+paste0("total US cases = ", as.character(sum(US_state_totals$cases)) )
+
+# Latest data from:
+paste0("latest data from: ", as.character(max(US_by_state$Date)) )
+```
+
+
+## Visualizing the state data
+
+```{r usmap, warning = FALSE}
+library(usmap)
+US_data <- US_state_totals %>% 
+  mutate(state = Province_State) %>% 
+  filter(!is.na(deaths_per_mill))
+```
+
+### Plot states
+```{r plot_state_colors, fig.width = 9}
+plot_usmap(data = US_data, 
+           values = "deaths_per_mill",
+           color = "black") + 
+    scale_fill_gradient(name = "Deaths per million",
+                      low = "yellow", high = "red") +
+  theme(legend.position = "right")
+```
+
+### partition deaths per million into 10 equal ranges.
+
+```{r cut_deaths, warning = FALSE}
+US_data <- US_data %>%
+  filter(population > 0) %>%
+  mutate(death_group = cut(deaths_per_mill,
+                        breaks = seq(min(deaths_per_mill),
+                                     max(deaths_per_mill),
+                                     length.out = 10), 
+                        include.lowest = TRUE,
+                        right = FALSE, 
+                        ordered_result = TRUE) )
+```
+
+### Plot 10 levels
+```{r plot_10_levels, fig.width = 9}
+plot_usmap(data = US_data, 
+           values = "death_group",
+           color = "black") + 
+  scale_fill_discrete(name = "Deaths_per_million") +
+            theme(legend.position = "right")
+```
+
+### Add states to global
+```{r expand_US}
+#Replace the US observations in the global dataset with the US data
+exp_global <- global %>% 
+  # remove the US total data from the dataset
+  filter(Country_Region != "US") %>% 
+  # add on the totals by state
+  bind_rows(US_by_state)
+```
+
+### Add continents
+```{r add_continents}
+library(countrycode)
+temp <- countrycode(exp_global$Country_Region,
+                    origin = "country.name",
+                    destination = "continent")
+Confirmed <- exp_global %>%
+  mutate(continent = temp) %>%
+  mutate(continent = case_when(
+    Country_Region == "Cruise Ship"~"Cruiseship",
+    Country_Region == "Diamond Princess"~"Cruiseship",
+    Country_Region == "MS Zaandam"~"Cruiseship",
+    Country_Region == "Kosovo" ~ "Europe",
+    TRUE ~ continent)) %>%
+  # create a Country_State combining Province_State & Country_Region
+  unite(Country_State, c(Country_Region, Province_State), 
+        na.rm = TRUE, remove = FALSE)
+Confirmed %>% filter(is.na(continent))
+```
+### Compute Deaths per million population 
+```{r deaths_per_million}
+Confirmed <- Confirmed %>%
+  mutate(Deaths_per_mill = 1000000 * Deaths / Population) %>%
+  select(Country_State, Date, Confirmed_cases, 
+         Deaths, Deaths_per_mill, continent, 
+         Population, Lat, Long, everything()) %>%
+  filter(Confirmed_cases > 0) # leave off rows w/o cases
+```
+
+### Country/State's w/ most cases 
+```{r country_state_totals}
+Confirmed_totals <- Confirmed %>% 
+  group_by(Country_State, Province_State, Country_Region, continent) %>%
+  summarize(Confirmed_cases = max(Confirmed_cases), 
+            Deaths = max(Deaths),
+            Deaths_per_mill = max(Deaths_per_mill),
+            Date_first_case = min(Date),
+            Population = max(Population)) %>%
+  ungroup() %>%
+  select(Country_State, Date_first_case, Deaths_per_mill,
+         Deaths, Confirmed_cases, Population, everything())
+```
+
+### Worldwide totals to date
+
+```{r world_total_deaths}
+# total deaths 
+paste0("total worldwide deaths = ", as.character(sum(Confirmed_totals$Deaths)) )
+
+# total cases
+paste0("total worldwide cases = ", as.character(sum(Confirmed_totals$Confirmed_cases)) )
+
+# average deaths per million to date
+df <- Confirmed_totals %>%
+  summarize(death_rate = 1000000 * sum(Deaths, na.rm = TRUE) / sum(Population, na.rm = TRUE))
+
+paste0("total worldwide deaths per million to date = ", as.character(sum(df$death_rate)) )
+
+# Latest data from:
+paste0("latest data from: ", as.character(max(US_by_state$Date)) )
+```
+
+### Top 25 and top 100
+```{r top_25_50, results = "asis"}
+Top_25 <- Confirmed_totals %>% 
+  arrange(desc(Confirmed_cases)) %>%
+  slice(1:25) %>%
+# Top_25 %>% 
+  select(Country_State, continent,
+          Confirmed_cases, Deaths,Deaths_per_mill) 
+knitr::kable(Top_25 %>% slice(1:8))
+Top_100 <- Confirmed_totals %>% 
+  arrange(desc(Confirmed_cases)) %>%
+  slice(1:100)
+```
+
+### Get data for top 25
+
+```{r plot_top_25}
+# grab top 25 country / states for graphing
+Top_25_states <- Top_25$Country_State
+Top_25_data <- Confirmed %>% 
+  filter(Country_State %in% Top_25_states) %>%
+  select(Country_State, continent, Date, Confirmed_cases, 
+         Deaths, Deaths_per_mill)
+```
+
+### Graph top 25 
+```{r graph_top25, fig.width=10, warning=FALSE}
+Top_25_data %>% filter(Confirmed_cases > 0) %>%
+  ggplot(aes(x = Date, y = Confirmed_cases, 
+             group = Country_State, 
+             color = Country_State)) +
+    geom_line() +
+    facet_wrap(~continent, scales = "free") +
+    scale_y_log10() +
+    labs(title = "Confirmed Cases - top 25", x = NULL, y = NULL) +
+    guides(color = guide_legend(ncol = 6)) +
+    theme(legend.position="bottom",axis.text.x = element_text(angle = 90))
+Top_25_data %>% filter(Deaths > 0) %>%
+  ggplot(aes(x = Date, y = Deaths, 
+             group = Country_State, 
+             color = Country_State)) +
+    geom_line() +
+    facet_wrap(~continent, scales = "free") +
+    scale_y_log10() +
+    labs(title = "Deaths - top 25", x = NULL, y = NULL) + 
+    guides(color = guide_legend(ncol = 6)) +
+    theme(legend.position="bottom",axis.text.x = element_text(angle = 90))
+Top_25_data %>% filter(Deaths > 0) %>%
+  ggplot(aes(x = Date, y = Deaths_per_mill, 
+             group = Country_State, 
+             color = Country_State)) +
+    geom_line() +
+    labs(title = "Deaths per million population", x = NULL,
+         y = NULL) +
+    facet_wrap(~continent, scales = "free") +
+    scale_y_log10() +
+    guides(color = guide_legend(ncol = 6)) +
+    theme(legend.position="bottom",axis.text.x = element_text(angle = 90))
+```
+
+
+## Scandinavia analysis
+
+```{r scandinavia, results = "asis"}
+# look at cases in Scandinavia since Sweden has not shut down their economy like other countries have.  What impact has this had on death rates?
+Scandinavia <- Confirmed %>% 
+  filter(Country_State %in% c("Sweden", "Denmark", "Finland")) %>%
+  select(Country_State, Date, Confirmed_cases, Deaths, Deaths_per_mill, everything()) %>%
+  mutate(Country_State = factor(Country_State)) 
+
+Scandinavia %>% 
+  filter(Deaths > 0) %>%
+    ggplot(aes(x = Date, y = Deaths, color = Country_State)) +
+  geom_point() + geom_line() +
+  labs(title = "Deaths", x = NULL, y = NULL) +
+  scale_y_log10()
+Scandinavia %>% 
+  filter(Deaths > 0) %>%
+    ggplot(aes(x = Date, y = Deaths_per_mill, color = Country_State)) +
+  geom_point() + geom_line() +
+  labs(title = "Deaths per million", x = NULL, y = NULL) +
+  scale_y_log10()  
+Scand_summ <- Scandinavia %>% group_by(Country_State) %>%
+  summarize(Max_Deaths_per_million =
+              max(Deaths_per_mill),
+            Total_cases = max(Confirmed_cases),
+            Total_deaths = max(Deaths),
+            Population = max(Population))
+knitr::kable(Scand_summ)
+```
+
+
+# Modeling
+
+### Hubei province of China and the Diamond Princess cruise ship.
+
+```{r slowed}
+Slowed_cases <- Confirmed %>% 
+  filter(Country_State %in% c("China_Hubei", "Diamond Princess")) 
+Slowed_cases %>%
+  ggplot(aes(x = Date, y = Confirmed_cases)) +
+    geom_point() +
+  facet_wrap(~ Country_State, scales = "free") 
+```
+
+### Fitting a sigmoid function.
+```{r nls}
+# thanks to http://kyrcha.info/2012/07/08/tutorials-fitting-a-sigmoid-function-in-r
+# function needed for visualization purposes
+sigmoid = function(x, params) {
+  params[1] / (1 + exp(-params[2] * (x - params[3])))
+}
+
+x = 1:53
+y = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0.1,0.18,0.18,0.18,0.33,0.33,0.33,0.33,0.41,0.41,0.41,0.41,0.41,0.41,0.5,0.5,0.5,0.5,0.68,0.58,0.58,0.68,0.83,0.83,0.83,0.74,0.74,0.74,0.83,0.83,0.9,0.9,0.9,1,1,1,1,1,1,1)
+df <- tibble(x = x, y = y)    
+# fitting code
+fitmodel <- nls(y ~ a /(1 + exp(-b * (x - c))), data = df,
+                start = list(a = 1, b = 0.5, c = 25))
+```
+
+### Plot model and data for sigmoid example
+```{r nls2}
+# visualization code
+# get the coefficients using the coef function
+params=coef(fitmodel)
+    
+df$y2 <- sigmoid(x, params)
+df %>% ggplot(aes(x, y2)) + geom_line() + geom_point(y = y)
+```
+
+### More generalized sigmoid function 
+
+$$y(t) = \frac{K}{\left(1 + Q*e^\left(-B*\left(t - t0\right)\right)\right)^\frac{1}{v}}$$ 
+
+Goal: use that form for Hubei and fit a sigmoid function to that data. 
+
+### Start simply
+
+$$y(t) =  \frac{K}{\left(1 + e^\left(-B*\left(t - t0\right)\right)\right)}$$
+
+### Get, visualize, model Hubei data
+
+```{r Hubei_simple_sigmoid}
+library(broom)
+Hubei_cases <- Confirmed %>% 
+  filter(Country_State == "China_Hubei") %>%
+  mutate(date_int = unclass(Date))
+Hubei_cases %>%
+  ggplot(aes(x = Date, y = Confirmed_cases)) +
+    geom_point()  
+# first with simplified sigmoid function
+sigmoid <- function(x, params) {
+  params[1] / (1 + exp(-params[2] * (x - params[3])))
+}
+mod1 <- nls(Confirmed_cases ~ K /(1 + exp(-B * (date_int - t0))), 
+         data = Hubei_cases,
+         start = list(K = 60000, B = 0.5, t0 = 18300))
+params <- coef(mod1)
+```
+
+### Plot Hubei model and data
+```{r Hubei_plot}
+Hubei_cases <- Hubei_cases %>% 
+  mutate(pred = sigmoid(date_int, params)  ) %>%
+  select(Confirmed_cases, pred, Date, date_int, everything())
+
+Hubei_cases %>% 
+  ggplot(aes(Date, pred)) + 
+  geom_line() + 
+  geom_point(aes(y = Confirmed_cases))
+```
+
+### Model summary
+```{r mod1_stats}
+summary(mod1)
+glance(mod1)
+```
+
+### One more step
+
+$$y(t) = \frac{K}{\left(1 + e^\left(-B*\left(t - t0\right)\right)\right)^\frac{1}{v}}$$ 
+
+### More complex model on Hubei
+
+```{r Hubei_sigmoid}
+sigmoid_gen <- function(x, params) {
+  params[1] /
+    ( (1 +  exp(-params[2] * (x - params[3]))) ) ^ (1 / params[4])
+}
+
+startK <- max(Hubei_cases$Confirmed_cases)
+mod2 <- nls(Confirmed_cases ~ K /( (1 +  exp(-B * (date_int - t0))) ) ^(1/v) , 
+                data = Hubei_cases,
+                start = list(K = startK,  B = .25, t0 = 18300, v = 1) ) 
+```
+
+### Visualize both Hubei models
+```{r viz_models}
+# get the coefficients using the coef function
+params <- coef(mod2)
+    
+Hubei_cases <- Hubei_cases %>% 
+  mutate(pred2 = sigmoid_gen(date_int, params) ) %>%
+  select(Confirmed_cases, pred2, pred, Date, date_int, everything())
+
+Hubei_cases %>% 
+  ggplot(aes(x = Date)) + 
+  geom_line(aes(y = pred2), color = "red") + 
+  geom_line(aes(y = pred), color = "black") +
+  geom_point(aes(y = Confirmed_cases))
+# use broom::glance to look at model results
+summary(mod2)
+glance(mod2)
+```
+### Our plan of attack
+
+* use a map function and nested grouped data to develop models out of this more complicated model family for the Diamond Princess and most of the China provinces
+* Add the model to the nested data
+* Use `broom::tidy()` to add the coefficients of the models to the dataset
+* Use pivot_wider to make these coefficients into columns.
+
+### Nest China and Princess data
+
+```{r many_models, warning = FALSE}
+by_country <- Confirmed %>%
+  filter(Country_State != "China_Beijing",
+         Country_State != "China_Shanxi", 
+         Country_State != "China_Tibet") %>%
+   filter(Country_Region == "China" | Country_State == "Diamond Princess") %>% 
+  #filter(Confirmed_cases > 200) %>%
+  mutate(date_int = unclass(Date)) %>%
+  group_by(Country_State, Province_State, Country_Region, 
+           continent, Lat, Long) %>%
+  nest()
+# by_country$data[[1]]
+by_country
+```
+
+### Add models to nested data
+```{r add_models, warning = FALSE}
+country_mod2 <- function(df){
+  startK <- max(df$Confirmed_cases)
+  nls(Confirmed_cases ~ K /( (1 +  exp(-B * (date_int - t0))) ) ^(1/v) , 
+        data = df,
+        start = list(K = startK,  B = .25, t0 = 18300, v = 1),
+        control = list(maxiter = 1000, warnOnly = TRUE))
+}
+
+by_country <- by_country %>%
+  mutate(model = map(data, country_mod2),
+         tm = map(model, broom::tidy)) %>%
+  unnest(tm) %>%
+  select(Country_State, Lat, Long, term, estimate,
+         `std.error`, statistic, p.value, everything())
+```
+
+### Look at results
+
+```{r int_model_results}
+by_country
+```
+
+### Make data per province
+```{r make_table}
+province_data <- by_country %>%
+  ungroup() %>%
+  select(Province_State, Lat, Long, term, estimate, data) %>%
+  pivot_wider(names_from = term, values_from = estimate) %>%
+  mutate(t0_date = as_date(t0))
+province_data %>% arrange(t0_date) %>% print(n = Inf)
+```
+
+### Join with province totals
+```{r province_totals}
+pd <- province_data %>% left_join(Confirmed_totals) %>%
+  filter(!is.na(Province_State))
+pd %>% print(n = Inf, width = Inf)
+```

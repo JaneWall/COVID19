@@ -3,13 +3,13 @@ title: "Tidyverse for COVID19 Data Analysis"
 author: "J. Wall"
 date: "`r Sys.Date()`"
 output:
-  word_document: default
-  pdf_document: default
   html_document:
     df_print: paged
+  word_document: default
   powerpoint_presentation:
     slide_level: 3 # use this to override default
     reference_doc: my_template.pptx
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE, warning = FALSE, message = FALSE}
@@ -185,6 +185,19 @@ DMV_totals %>%
   labs(title = "COVID19 in DMV", x = NULL, y = NULL)
 ```
 
+### New cases
+
+```{r dmv_newcases}
+DMV_totals <- DMV_totals %>%
+   mutate(new_cases = total_cases - lag(total_cases)) 
+DMV_totals %>%
+  filter(new_cases > 0) %>%
+  ggplot(aes(x = Date, y = new_cases)) +
+  geom_line(color = "red") +
+  geom_point() +
+  labs(title = "New COVID19 cases in DMV", x = NULL, y = NULL)
+```
+
 ## State analysis
 
 ### Compute state totals
@@ -208,6 +221,8 @@ US_by_state %>% head(n = 3) %>%
   select(Province_State, Date, Confirmed_cases, 
          Deaths, Population, Country_Region)
 ```
+
+
 ### Order deaths and cases by state
 
 ```{r deaths_per_state}

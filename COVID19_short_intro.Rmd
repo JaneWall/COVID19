@@ -313,7 +313,11 @@ global_deaths <- read_csv(urls[2]) %>%
     pivot_longer(cols = -c(`Province/State`, `Country/Region`, Lat, Long), names_to = "Date", 
                values_to = "Deaths")
     
-global <- global_confirmed %>% full_join(global_deaths) %>%
+global <- global_confirmed %>% 
+  full_join(global_deaths, 
+            by = c("Province/State", "Country/Region", "Date")) %>%
+    rename(Long = Long.x, Lat = Lat.x) %>%
+  select(-c(Lat.y, Long.y)) %>%
   rename(Country_Region = `Country/Region`, Province_State = `Province/State`) %>%
   mutate(Date = mdy(Date))
 ```
